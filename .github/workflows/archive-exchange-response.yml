@@ -1,0 +1,79 @@
+name: archive-exchange-response
+
+# Archive rows for the Docker-only models on mass/exchange-response, on a
+# runner that has Docker, so that tests/test_docs_in_sync.py can be satisfied
+# from a machine that does not. Lives on this side branch of the fork only;
+# it is not part of the probe pull request.
+#
+#   gh workflow run archive-exchange-response --repo Skyan1002/HydroTuring \
+#      --ref ci/archive-exchange-response
+#
+# Evaluates the current probe branch, not this one, so a later push to the
+# probe branch is picked up without touching this file.
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: 'Space-separated models (blank = the six Docker-only ones)'
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: probe/exchange-response
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install
+        run: pip install -e '.[dev]'
+
+      - name: Select models
+        id: select
+        run: |
+          if [ -n "${{ github.event.inputs.models }}" ]; then
+            echo "models=${{ github.event.inputs.models }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "models=google_flood_forecast summa dhbv2 wflow_sbm cwatm lisflood" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Archive the probe on each model
+        run: |
+          mkdir -p archive
+          status=0
+          for model in ${{ steps.select.outputs.models }}; do
+            echo "::group::$model"
+            if ht run --model "$model" --probe mass/exchange-response \
+                      --gate-seeds --csv archive/result.csv \
+                      --json "archive/$model.json"; then
+              code=0
+            else
+              code=$?
+            fi
+            echo "::endgroup::"
+            # 1 = scientific FAIL or N/A, which is a result and is archived;
+            # 2 = harness or adapter ERROR, which is not.
+            if [ "$code" -ne 0 ] && [ "$code" -ne 1 ]; then
+              echo "::error::$model exited $code"
+              status=1
+            fi
+          done
+          echo "=== rows produced ==="
+          cat archive/result.csv
+          exit "$status"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exchange-response-archive
+          path: archive/
